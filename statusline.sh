@@ -1,5 +1,5 @@
 #!/bin/bash
-# Single line: Model | tokens | %used | %remain | think | 5h bar @reset | 7d bar @reset | extra
+# Single line: CWD@branch | tokens | %used | %remain | 5h bar in Xh | 7d bar in Xd | extra
 
 set -f  # disable globbing
 
@@ -11,7 +11,6 @@ if [ -z "$input" ]; then
 fi
 
 # ANSI colors matching oh-my-posh theme
-blue='\033[38;2;0;153;255m'
 orange='\033[38;2;255;176;85m'
 green='\033[38;2;0;160;0m'
 cyan='\033[38;2;46;149;153m'
@@ -31,11 +30,6 @@ format_tokens() {
     else
         printf "%d" "$num"
     fi
-}
-
-# Format number with commas (e.g., 134,938)
-format_commas() {
-    printf "%'d" "$1"
 }
 
 # Build a colored progress bar
@@ -65,7 +59,6 @@ build_bar() {
 }
 
 # ===== Extract data from JSON =====
-model_name=$(echo "$input" | jq -r '.model.display_name // "Claude"')
 
 # Context window
 size=$(echo "$input" | jq -r '.context_window.context_window_size // 200000')
@@ -87,27 +80,14 @@ else
 fi
 pct_remain=$(( 100 - pct_used ))
 
-used_comma=$(format_commas $current)
-remain_comma=$(format_commas $(( size - current )))
-
-# Check thinking status
-thinking_on=false
-settings_path="$HOME/.claude/settings.json"
-if [ -f "$settings_path" ]; then
-    thinking_val=$(jq -r '.alwaysThinkingEnabled // false' "$settings_path" 2>/dev/null)
-    [ "$thinking_val" = "true" ] && thinking_on=true
-fi
-
 # ===== Build single-line output =====
 out=""
-out+="${blue}${model_name}${reset}"
 
 # Current working directory
 cwd=$(echo "$input" | jq -r '.cwd // empty')
 if [ -n "$cwd" ]; then
     display_dir="${cwd##*/}"
     git_branch=$(git -C "${cwd}" rev-parse --abbrev-ref HEAD 2>/dev/null)
-    out+=" ${dim}|${reset} "
     out+="${cyan}${display_dir}${reset}"
     if [ -n "$git_branch" ]; then
         out+="${dim}@${reset}${green}${git_branch}${reset}"
@@ -120,13 +100,6 @@ out+=" ${dim}|${reset} "
 out+="${green}${pct_used}%${reset} ${dim}used${reset}"
 out+=" ${dim}|${reset} "
 out+="${cyan}${pct_remain}%${reset} ${dim}remain${reset}"
-out+=" ${dim}|${reset} "
-out+="thinking: "
-if $thinking_on; then
-    out+="${orange}On${reset}"
-else
-    out+="${dim}Off${reset}"
-fi
 
 # ===== Cross-platform OAuth token resolution (from statusline.sh) =====
 # Tries credential sources in order: env var → macOS Keychain → Linux creds file → GNOME Keyring
@@ -180,40 +153,58 @@ get_oauth_token() {
 
 # ===== LINE 2 & 3: Usage limits with progress bars (cached) =====
 cache_file="/tmp/claude/statusline-usage-cache.json"
+cache_lock="/tmp/claude/.statusline-cache.lock"
 cache_max_age=60  # seconds between API calls
 mkdir -p /tmp/claude
 
 needs_refresh=true
 usage_data=""
 
-# Check cache
-if [ -f "$cache_file" ]; then
-    cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
-    now=$(date +%s)
-    cache_age=$(( now - cache_mtime ))
-    if [ "$cache_age" -lt "$cache_max_age" ]; then
-        needs_refresh=false
-        usage_data=$(cat "$cache_file" 2>/dev/null)
-    fi
-fi
-
-# Fetch fresh data if cache is stale
-if $needs_refresh; then
-    token=$(get_oauth_token)
-    if [ -n "$token" ] && [ "$token" != "null" ]; then
-        response=$(curl -s --max-time 10 \
-            -H "Accept: application/json" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $token" \
-            -H "anthropic-beta: oauth-2025-04-20" \
-            -H "User-Agent: claude-code/2.1.34" \
-            "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
-        if [ -n "$response" ] && echo "$response" | jq . >/dev/null 2>&1; then
-            usage_data="$response"
-            echo "$response" > "$cache_file"
+# Try to load fresh data from cache; sets needs_refresh=false and usage_data on hit
+try_load_cache() {
+    if [ -f "$cache_file" ]; then
+        local cache_mtime cache_age
+        cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
+        cache_age=$(( $(date +%s) - cache_mtime ))
+        if [ "$cache_age" -lt "$cache_max_age" ]; then
+            needs_refresh=false
+            usage_data=$(cat "$cache_file" 2>/dev/null)
         fi
     fi
-    # Fall back to stale cache
+}
+
+# Check cache
+try_load_cache
+
+# Fetch fresh data if cache is stale (with flock to prevent concurrent API calls)
+if $needs_refresh; then
+    exec 200>"$cache_lock"
+    if flock -n 200; then
+        # Won the lock — re-check cache in case another process just refreshed it
+        try_load_cache
+        if $needs_refresh; then
+            token=$(get_oauth_token)
+            if [ -n "$token" ] && [ "$token" != "null" ]; then
+                response=$(curl -s --max-time 10 \
+                    -H "Accept: application/json" \
+                    -H "Content-Type: application/json" \
+                    -H "Authorization: Bearer $token" \
+                    -H "anthropic-beta: oauth-2025-04-20" \
+                    -H "User-Agent: claude-code/2.1.34" \
+                    "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
+                if [ -n "$response" ] && echo "$response" | jq . >/dev/null 2>&1; then
+                    usage_data="$response"
+                    # Atomic write: write to temp file then mv
+                    tmpfile=$(mktemp /tmp/claude/.cache.XXXXXX)
+                    echo "$response" > "$tmpfile"
+                    mv "$tmpfile" "$cache_file"
+                fi
+            fi
+        fi
+        flock -u 200
+    fi
+    exec 200>&-
+    # Fall back to existing cache (stale or just refreshed by another process)
     if [ -z "$usage_data" ] && [ -f "$cache_file" ]; then
         usage_data=$(cat "$cache_file" 2>/dev/null)
     fi
@@ -255,34 +246,36 @@ iso_to_epoch() {
     return 1
 }
 
-# Format ISO reset time to compact local time
-# Usage: format_reset_time <iso_string> <style: time|datetime|date>
-format_reset_time() {
+# Format remaining time until reset as compact "Xd Yh Zm" string
+# Usage: format_remaining_time <iso_string>
+format_remaining_time() {
     local iso_str="$1"
-    local style="$2"
     [ -z "$iso_str" ] || [ "$iso_str" = "null" ] && return
 
-    # Parse ISO datetime and convert to local time (cross-platform)
-    local epoch
-    epoch=$(iso_to_epoch "$iso_str")
-    [ -z "$epoch" ] && return
+    local reset_epoch now_epoch diff
+    reset_epoch=$(iso_to_epoch "$iso_str")
+    [ -z "$reset_epoch" ] && return
 
-    # Format based on style (try BSD date first, then GNU date)
-    # BSD date uses %p (uppercase AM/PM), so convert to lowercase
-    case "$style" in
-        time)
-            date -j -r "$epoch" +"%l:%M%p" 2>/dev/null | sed 's/^ //' | tr '[:upper:]' '[:lower:]' || \
-            date -d "@$epoch" +"%l:%M%P" 2>/dev/null | sed 's/^ //'
-            ;;
-        datetime)
-            date -j -r "$epoch" +"%b %-d, %l:%M%p" 2>/dev/null | sed 's/  / /g; s/^ //' | tr '[:upper:]' '[:lower:]' || \
-            date -d "@$epoch" +"%b %-d, %l:%M%P" 2>/dev/null | sed 's/  / /g; s/^ //'
-            ;;
-        *)
-            date -j -r "$epoch" +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]' || \
-            date -d "@$epoch" +"%b %-d" 2>/dev/null
-            ;;
-    esac
+    now_epoch=$(date +%s)
+    diff=$(( reset_epoch - now_epoch ))
+
+    # Already past reset time
+    if [ "$diff" -le 0 ]; then
+        printf "0m"
+        return
+    fi
+
+    local days=$(( diff / 86400 ))
+    local hours=$(( (diff % 86400) / 3600 ))
+    local mins=$(( (diff % 3600) / 60 ))
+
+    if [ "$days" -gt 0 ]; then
+        printf "%dd%dh" "$days" "$hours"
+    elif [ "$hours" -gt 0 ]; then
+        printf "%dh%dm" "$hours" "$mins"
+    else
+        printf "%dm" "$mins"
+    fi
 }
 
 sep=" ${dim}|${reset} "
@@ -293,20 +286,20 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     # ---- 5-hour (current) ----
     five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
     five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
-    five_hour_reset=$(format_reset_time "$five_hour_reset_iso" "time")
+    five_hour_remaining=$(format_remaining_time "$five_hour_reset_iso")
     five_hour_bar=$(build_bar "$five_hour_pct" "$bar_width")
 
-    out+="${sep}${white}5h${reset} ${five_hour_bar} ${cyan}${five_hour_pct}%${reset}"
-    [ -n "$five_hour_reset" ] && out+=" ${dim}@${five_hour_reset}${reset}"
+    out+="${sep} ${five_hour_bar} ${cyan}${five_hour_pct}%${reset}"
+    [ -n "$five_hour_remaining" ] && out+=" ${dim}in ${five_hour_remaining}${reset}"
 
     # ---- 7-day (weekly) ----
     seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')
     seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
-    seven_day_reset=$(format_reset_time "$seven_day_reset_iso" "datetime")
+    seven_day_remaining=$(format_remaining_time "$seven_day_reset_iso")
     seven_day_bar=$(build_bar "$seven_day_pct" "$bar_width")
 
-    out+="${sep}${white}7d${reset} ${seven_day_bar} ${cyan}${seven_day_pct}%${reset}"
-    [ -n "$seven_day_reset" ] && out+=" ${dim}@${seven_day_reset}${reset}"
+    out+="${sep} ${seven_day_bar} ${cyan}${seven_day_pct}%${reset}"
+    [ -n "$seven_day_remaining" ] && out+=" ${dim}in ${seven_day_remaining}${reset}"
 
     # ---- Extra usage ----
     extra_enabled=$(echo "$usage_data" | jq -r '.extra_usage.is_enabled // false')

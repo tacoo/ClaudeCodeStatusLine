@@ -1,6 +1,6 @@
 # Claude Code Status Line
 
-A custom status line for [Claude Code](https://claude.com/claude-code) that displays model info, token usage, rate limits, and reset times in a single compact line.
+A custom status line for [Claude Code](https://claude.com/claude-code) that displays token usage, rate limits, and remaining time in a single compact line.
 
 ## Screenshot
 
@@ -10,13 +10,11 @@ A custom status line for [Claude Code](https://claude.com/claude-code) that disp
 
 | Segment | Description |
 |---------|-------------|
-| **Model** | Current model name (e.g., Opus 4.6) |
 | **CWD@Branch** | Current folder name and git branch (if in a repo) |
 | **Tokens** | Used / total context window tokens |
 | **% Used / Remain** | Context window usage percentage |
-| **Thinking** | Whether extended thinking is enabled |
-| **5h** | 5-hour rate limit usage with progress bar and reset time |
-| **7d** | 7-day rate limit usage with progress bar and reset time |
+| **5h** | 5-hour rate limit usage with progress bar and remaining time |
+| **7d** | 7-day rate limit usage with progress bar and remaining time |
 | **Extra** | Extra usage credits spent / limit (if enabled) |
 
 Progress bars change color based on usage: green → orange → yellow → red.
@@ -61,7 +59,7 @@ Claude Code will save the script and configure `settings.json` for you automatic
 
 ## Caching
 
-Usage data from the Anthropic API is cached for 60 seconds at `/tmp/claude/statusline-usage-cache.json` to avoid excessive API calls.
+Usage data from the Anthropic API is cached for 60 seconds at `/tmp/claude/statusline-usage-cache.json` to avoid excessive API calls. Cache writes are atomic (write to temp file then `mv`), and concurrent refreshes are prevented with `flock`.
 
 ## License
 
