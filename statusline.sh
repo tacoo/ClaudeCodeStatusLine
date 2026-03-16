@@ -313,6 +313,20 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     fi
 fi
 
+# Off-peak indicator (peak = Mon-Fri 8:00-13:59 ET, until 2026-03-27)
+et_date=$(TZ=America/New_York date +"%u %H %Y%m%d")
+et_dow=${et_date%% *}          # 1=Mon..7=Sun
+et_rest=${et_date#* }
+et_hour=${et_rest%% *}          # 00-23
+et_ymd=${et_rest#* }            # YYYYMMDD
+et_hour=${et_hour#0}            # strip leading zero
+
+if [ "$et_ymd" -le 20260327 ]; then
+    if [ "$et_dow" -ge 6 ] || [ "$et_hour" -lt 8 ] || [ "$et_hour" -ge 14 ]; then
+        out+="${sep}${dim}off-peak${reset}"
+    fi
+fi
+
 # Output single line
 printf "%b" "$out"
 
