@@ -52,7 +52,7 @@ function Format-RemainingTime([string]$isoStr) {
     if (-not $isoStr -or $isoStr -eq 'null') { return $null }
 
     try {
-        $resetTime = [DateTime]::Parse($isoStr, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)
+        $resetTime = [DateTimeOffset]::Parse($isoStr).UtcDateTime
         $diff = $resetTime - [DateTime]::UtcNow
     } catch {
         return $null
