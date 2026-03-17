@@ -35,7 +35,7 @@ Copy the contents of `statusline.sh` and paste it into Claude Code with the prom
 
 Claude Code will save the script and configure `settings.json` for you automatically.
 
-### Manual setup
+### Manual setup (Linux / macOS)
 
 1. Copy the script to your Claude config directory:
 
@@ -51,6 +51,27 @@ Claude Code will save the script and configure `settings.json` for you automatic
      "statusLine": {
        "type": "command",
        "command": "~/.claude/statusline.sh"
+     }
+   }
+   ```
+
+3. Restart Claude Code.
+
+### Manual setup (Windows PowerShell)
+
+1. Copy the script to your Claude config directory:
+
+   ```powershell
+   Copy-Item statusline.ps1 "$env:USERPROFILE\.claude\statusline.ps1"
+   ```
+
+2. Add the status line config to `%USERPROFILE%\.claude\settings.json`:
+
+   ```json
+   {
+     "statusLine": {
+       "type": "command",
+       "command": "powershell -ExecutionPolicy Bypass -File \"%USERPROFILE%\\.claude\\statusline.ps1\""
      }
    }
    ```
