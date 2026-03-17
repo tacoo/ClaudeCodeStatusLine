@@ -44,6 +44,12 @@ Claude Code will save the script and configure `settings.json` for you automatic
    chmod +x ~/.claude/statusline.sh
    ```
 
+   Or download directly from GitHub:
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/tacoo/ClaudeCodeStatusLine/main/statusline.sh -o ~/.claude/statusline.sh && chmod +x ~/.claude/statusline.sh
+   ```
+
 2. Add the status line config to `~/.claude/settings.json`:
 
    ```json
@@ -63,6 +69,12 @@ Claude Code will save the script and configure `settings.json` for you automatic
 
    ```powershell
    Copy-Item statusline.ps1 "$env:USERPROFILE\.claude\statusline.ps1"
+   ```
+
+   Or download directly from GitHub:
+
+   ```powershell
+   Invoke-WebRequest -Uri "https://raw.githubusercontent.com/tacoo/ClaudeCodeStatusLine/main/statusline.ps1" -OutFile "$env:USERPROFILE\.claude\statusline.ps1"
    ```
 
 2. Add the status line config to `%USERPROFILE%\.claude\settings.json`:
