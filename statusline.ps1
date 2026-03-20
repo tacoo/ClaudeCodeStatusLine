@@ -1,8 +1,27 @@
-# Single line: CWD@branch | tokens | %used | %remain | 5h bar in Xh | 7d bar in Xd | extra
+# Single line: CWD@branch | tokens | %used | %remain | 5h bar in Xh | 7d bar in Xd
 # Windows-only PowerShell version of statusline.sh
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'SilentlyContinue'
+
+$Version = "1.0.0"
+
+if ($args -contains '--update') {
+    $oldVersion = $Version
+    try {
+        $tmp = [System.IO.Path]::GetTempFileName()
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/tacoo/ClaudeCodeStatusLine/main/statusline.ps1" -OutFile $tmp
+        $newVersion = (Select-String -Path $tmp -Pattern '^\$Version\s*=\s*"(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+        Copy-Item $tmp $PSCommandPath -Force
+        Remove-Item $tmp -Force
+        "Updated: $PSCommandPath ($oldVersion -> $($newVersion ?? 'unknown'))"
+    } catch {
+        if ($tmp -and (Test-Path $tmp)) { Remove-Item $tmp -Force }
+        "Update failed: $_" | Write-Error
+        exit 1
+    }
+    exit 0
+}
 
 $jsonInput = [Console]::In.ReadToEnd().Trim()
 
@@ -48,44 +67,21 @@ function Build-Bar([int]$pct, [int]$width) {
     return "${barColor}${filledStr}${dim}${emptyStr}${reset}"
 }
 
-function Format-RemainingTime([string]$isoStr) {
-    if (-not $isoStr -or $isoStr -eq 'null') { return $null }
+function Format-Remaining([long]$resetEpoch) {
+    if ($resetEpoch -le 0) { return $null }
 
-    try {
-        $resetTime = [DateTimeOffset]::Parse($isoStr).UtcDateTime
-        $diff = $resetTime - [DateTime]::UtcNow
-    } catch {
-        return $null
-    }
+    $nowEpoch = [long]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+    $diff = $resetEpoch - $nowEpoch
 
-    if ($diff.TotalSeconds -le 0) { return "0m" }
+    if ($diff -le 0) { return "0m" }
 
-    $days  = [int][math]::Floor($diff.TotalDays)
-    $hours = $diff.Hours
-    $mins  = $diff.Minutes
+    $days  = [int][math]::Floor($diff / 86400)
+    $hours = [int][math]::Floor(($diff % 86400) / 3600)
+    $mins  = [int][math]::Floor(($diff % 3600) / 60)
 
     if ($days -gt 0)  { return "{0}d{1}h" -f $days, $hours }
     if ($hours -gt 0) { return "{0}h{1}m" -f $hours, $mins }
     return "{0}m" -f $mins
-}
-
-function Get-OAuthToken {
-    # 1. Env var override
-    if ($env:CLAUDE_CODE_OAUTH_TOKEN) {
-        return $env:CLAUDE_CODE_OAUTH_TOKEN
-    }
-
-    # 2. Windows credentials file
-    $credsFile = Join-Path $env:USERPROFILE ".claude\.credentials.json"
-    if (Test-Path $credsFile) {
-        try {
-            $creds = Get-Content $credsFile -Raw | ConvertFrom-Json
-            $token = $creds.claudeAiOauth.accessToken
-            if ($token -and $token -ne 'null') { return $token }
-        } catch {}
-    }
-
-    return $null
 }
 
 # ===== Extract data from JSON =====
@@ -101,8 +97,8 @@ $current = $inputTokens + $cacheCreate + $cacheRead
 $usedTokens  = Format-Tokens $current
 $totalTokens = Format-Tokens $size
 
-$pctUsed   = if ($size -gt 0) { [int][math]::Floor($current * 100 / $size) } else { 0 }
-$pctRemain = 100 - $pctUsed
+$pctUsed   = if ($data.context_window.used_percentage) { [int]$data.context_window.used_percentage } else { 0 }
+$pctRemain = if ($data.context_window.remaining_percentage) { [int]$data.context_window.remaining_percentage } else { 100 }
 
 # ===== Build single-line output =====
 $out = ""
@@ -127,103 +123,31 @@ $out += "${green}${pctUsed}%${reset} ${dim}used${reset}"
 $out += $sep
 $out += "${cyan}${pctRemain}%${reset} ${dim}remain${reset}"
 
-# ===== Usage limits with progress bars (cached) =====
-$cacheDir  = Join-Path $env:TEMP "claude"
-$cacheFile = Join-Path $cacheDir "statusline-usage-cache.json"
-$cacheMaxAge = 60  # seconds
+# ===== Rate limits from status line JSON =====
+$barWidth = 6
 
-if (-not (Test-Path $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
-
-$needsRefresh = $true
-$usageData = $null
-
-function Try-LoadCache {
-    if (Test-Path $cacheFile) {
-        $fileInfo = Get-Item $cacheFile
-        $cacheAge = ((Get-Date) - $fileInfo.LastWriteTime).TotalSeconds
-        if ($cacheAge -lt $script:cacheMaxAge) {
-            $script:needsRefresh = $false
-            $script:usageData = Get-Content $cacheFile -Raw | ConvertFrom-Json
-        }
-    }
-}
-
-Try-LoadCache
-
-if ($needsRefresh) {
-    $mutexName = "Global\ClaudeStatusLineCache"
-    $mutex = [System.Threading.Mutex]::new($false, $mutexName)
-    $acquired = $false
-
-    try {
-        $acquired = $mutex.WaitOne(0)
-        if ($acquired) {
-            # Re-check cache after acquiring lock
-            Try-LoadCache
-            if ($needsRefresh) {
-                $token = Get-OAuthToken
-                if ($token) {
-                    try {
-                        $headers = @{
-                            "Accept"         = "application/json"
-                            "Content-Type"   = "application/json"
-                            "Authorization"  = "Bearer $token"
-                            "anthropic-beta" = "oauth-2025-04-20"
-                            "User-Agent"     = "claude-code/2.1.34"
-                        }
-                        $response = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" `
-                            -Headers $headers -TimeoutSec 10 -ErrorAction Stop
-
-                        $usageData = $response
-                        # Atomic write
-                        $tmpFile = Join-Path $cacheDir (".cache." + [System.IO.Path]::GetRandomFileName())
-                        $response | ConvertTo-Json -Depth 10 | Set-Content -Path $tmpFile -Encoding UTF8
-                        Move-Item -Path $tmpFile -Destination $cacheFile -Force
-                    } catch {}
-                }
-            }
-        }
-    } catch {} finally {
-        if ($acquired) { $mutex.ReleaseMutex() }
-        $mutex.Dispose()
-    }
-
-    # Fall back to stale cache
-    if (-not $usageData -and (Test-Path $cacheFile)) {
-        $usageData = Get-Content $cacheFile -Raw | ConvertFrom-Json
-    }
-}
-
-if ($usageData) {
-    $barWidth = 6
-
-    # ---- 5-hour (current) ----
-    $fiveHourPct = [int][math]::Round(($usageData.five_hour.utilization -as [double]))
-    $fiveHourResetIso = $usageData.five_hour.resets_at
-    $fiveHourRemaining = Format-RemainingTime $fiveHourResetIso
+# 5-hour limit
+$fiveHourPct = $data.rate_limits.five_hour.used_percentage
+if ($null -ne $fiveHourPct) {
+    $fiveHourPct = [int]$fiveHourPct
+    $fiveHourReset = if ($data.rate_limits.five_hour.resets_at) { [long]$data.rate_limits.five_hour.resets_at } else { 0 }
+    $fiveHourRemaining = Format-Remaining $fiveHourReset
     $fiveHourBar = Build-Bar $fiveHourPct $barWidth
 
     $out += "${sep} ${fiveHourBar} ${cyan}${fiveHourPct}%${reset}"
     if ($fiveHourRemaining) { $out += " ${dim}in ${fiveHourRemaining}${reset}" }
+}
 
-    # ---- 7-day (weekly) ----
-    $sevenDayPct = [int][math]::Round(($usageData.seven_day.utilization -as [double]))
-    $sevenDayResetIso = $usageData.seven_day.resets_at
-    $sevenDayRemaining = Format-RemainingTime $sevenDayResetIso
+# 7-day limit
+$sevenDayPct = $data.rate_limits.seven_day.used_percentage
+if ($null -ne $sevenDayPct) {
+    $sevenDayPct = [int]$sevenDayPct
+    $sevenDayReset = if ($data.rate_limits.seven_day.resets_at) { [long]$data.rate_limits.seven_day.resets_at } else { 0 }
+    $sevenDayRemaining = Format-Remaining $sevenDayReset
     $sevenDayBar = Build-Bar $sevenDayPct $barWidth
 
     $out += "${sep} ${sevenDayBar} ${cyan}${sevenDayPct}%${reset}"
     if ($sevenDayRemaining) { $out += " ${dim}in ${sevenDayRemaining}${reset}" }
-
-    # ---- Extra usage ----
-    if ($usageData.extra_usage.is_enabled -eq $true) {
-        $extraPct   = [int][math]::Round(($usageData.extra_usage.utilization -as [double]))
-        $extraUsed  = "{0:F2}" -f (($usageData.extra_usage.used_credits -as [double]) / 100)
-        $extraLimit = "{0:F2}" -f (($usageData.extra_usage.monthly_limit -as [double]) / 100)
-        $extraBar   = Build-Bar $extraPct $barWidth
-
-        $out += "${sep}${white}extra${reset} ${extraBar} ${cyan}`$${extraUsed}/`$${extraLimit}${reset}"
-    }
 }
 
 # Off-peak indicator (peak = Mon-Fri 8:00-13:59 ET, until 2026-03-27)
@@ -238,10 +162,16 @@ try {
         $isWeekend = ($etDow -eq 0 -or $etDow -eq 6)
         $isOffHours = ($etHour -lt 8 -or $etHour -ge 14)
         if ($isWeekend -or $isOffHours) {
-            $out += "${sep}${dim}off-peak${reset}"
+            $out += "${sep}${green}off-peak${reset}"
         }
     }
 } catch {}
+
+# Version
+$version = $data.version
+if ($version) {
+    $out += "${sep}${dim}v${version}${reset}"
+}
 
 # Output single line
 $out

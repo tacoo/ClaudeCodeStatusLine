@@ -1,7 +1,24 @@
 #!/bin/bash
-# Single line: CWD@branch | tokens | %used | %remain | 5h bar in Xh | 7d bar in Xd | extra
+# Single line: CWD@branch | tokens | %used | %remain | 5h bar in Xh | 7d bar in Xd
 
 set -f  # disable globbing
+
+VERSION="1.0.0"
+
+if [ "$1" = "--update" ]; then
+    old_version="$VERSION"
+    tmp=$(mktemp)
+    if curl -fsSL https://raw.githubusercontent.com/tacoo/ClaudeCodeStatusLine/main/statusline.sh -o "$tmp"; then
+        new_version=$(grep '^VERSION=' "$tmp" | head -1 | cut -d'"' -f2)
+        cp "$tmp" "$0" && chmod +x "$0"
+        rm -f "$tmp"
+        echo "Updated: $0 ($old_version -> ${new_version:-unknown})"
+        exit 0
+    fi
+    rm -f "$tmp"
+    echo "Update failed." >&2
+    exit 1
+fi
 
 input=$(cat)
 
@@ -58,13 +75,44 @@ build_bar() {
     printf "${bar_color}${filled_str}${dim}${empty_str}${reset}"
 }
 
+# Format remaining time from epoch seconds
+format_remaining() {
+    local reset_epoch=$1
+    [ -z "$reset_epoch" ] || [ "$reset_epoch" = "0" ] || [ "$reset_epoch" = "null" ] && return
+
+    local now_epoch diff
+    now_epoch=$(date +%s)
+    diff=$(( reset_epoch - now_epoch ))
+
+    if [ "$diff" -le 0 ]; then
+        printf "0m"
+        return
+    fi
+
+    local days=$(( diff / 86400 ))
+    local hours=$(( (diff % 86400) / 3600 ))
+    local mins=$(( (diff % 3600) / 60 ))
+
+    if [ "$days" -gt 0 ]; then
+        printf "%dd%dh" "$days" "$hours"
+    elif [ "$hours" -gt 0 ]; then
+        printf "%dh%dm" "$hours" "$mins"
+    else
+        printf "%dm" "$mins"
+    fi
+}
+
 # ===== Extract data from JSON =====
 
 # Context window
 size=$(echo "$input" | jq -r '.context_window.context_window_size // 200000')
 [ "$size" -eq 0 ] 2>/dev/null && size=200000
 
-# Token usage
+# Pre-computed percentages
+pct_used=$(echo "$input" | jq -r '.context_window.used_percentage // 0')
+pct_remain=$(echo "$input" | jq -r '.context_window.remaining_percentage // 100')
+
+# Token counts for display
 input_tokens=$(echo "$input" | jq -r '.context_window.current_usage.input_tokens // 0')
 cache_create=$(echo "$input" | jq -r '.context_window.current_usage.cache_creation_input_tokens // 0')
 cache_read=$(echo "$input" | jq -r '.context_window.current_usage.cache_read_input_tokens // 0')
@@ -72,13 +120,6 @@ current=$(( input_tokens + cache_create + cache_read ))
 
 used_tokens=$(format_tokens $current)
 total_tokens=$(format_tokens $size)
-
-if [ "$size" -gt 0 ]; then
-    pct_used=$(( current * 100 / size ))
-else
-    pct_used=0
-fi
-pct_remain=$(( 100 - pct_used ))
 
 # ===== Build single-line output =====
 out=""
@@ -101,216 +142,30 @@ out+="${green}${pct_used}%${reset} ${dim}used${reset}"
 out+=" ${dim}|${reset} "
 out+="${cyan}${pct_remain}%${reset} ${dim}remain${reset}"
 
-# ===== Cross-platform OAuth token resolution (from statusline.sh) =====
-# Tries credential sources in order: env var → macOS Keychain → Linux creds file → GNOME Keyring
-get_oauth_token() {
-    local token=""
-
-    # 1. Explicit env var override
-    if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
-        echo "$CLAUDE_CODE_OAUTH_TOKEN"
-        return 0
-    fi
-
-    # 2. macOS Keychain
-    if command -v security >/dev/null 2>&1; then
-        local blob
-        blob=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null)
-        if [ -n "$blob" ]; then
-            token=$(echo "$blob" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-            if [ -n "$token" ] && [ "$token" != "null" ]; then
-                echo "$token"
-                return 0
-            fi
-        fi
-    fi
-
-    # 3. Linux credentials file
-    local creds_file="${HOME}/.claude/.credentials.json"
-    if [ -f "$creds_file" ]; then
-        token=$(jq -r '.claudeAiOauth.accessToken // empty' "$creds_file" 2>/dev/null)
-        if [ -n "$token" ] && [ "$token" != "null" ]; then
-            echo "$token"
-            return 0
-        fi
-    fi
-
-    # 4. GNOME Keyring via secret-tool
-    if command -v secret-tool >/dev/null 2>&1; then
-        local blob
-        blob=$(timeout 2 secret-tool lookup service "Claude Code-credentials" 2>/dev/null)
-        if [ -n "$blob" ]; then
-            token=$(echo "$blob" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-            if [ -n "$token" ] && [ "$token" != "null" ]; then
-                echo "$token"
-                return 0
-            fi
-        fi
-    fi
-
-    echo ""
-}
-
-# ===== LINE 2 & 3: Usage limits with progress bars (cached) =====
-cache_file="/tmp/claude/statusline-usage-cache.json"
-cache_lock="/tmp/claude/.statusline-cache.lock"
-cache_max_age=60  # seconds between API calls
-mkdir -p /tmp/claude
-
-needs_refresh=true
-usage_data=""
-
-# Try to load fresh data from cache; sets needs_refresh=false and usage_data on hit
-try_load_cache() {
-    if [ -f "$cache_file" ]; then
-        local cache_mtime cache_age
-        cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
-        cache_age=$(( $(date +%s) - cache_mtime ))
-        if [ "$cache_age" -lt "$cache_max_age" ]; then
-            needs_refresh=false
-            usage_data=$(cat "$cache_file" 2>/dev/null)
-        fi
-    fi
-}
-
-# Check cache
-try_load_cache
-
-# Fetch fresh data if cache is stale (with flock to prevent concurrent API calls)
-if $needs_refresh; then
-    exec 200>"$cache_lock"
-    if flock -n 200; then
-        # Won the lock — re-check cache in case another process just refreshed it
-        try_load_cache
-        if $needs_refresh; then
-            token=$(get_oauth_token)
-            if [ -n "$token" ] && [ "$token" != "null" ]; then
-                response=$(curl -s --max-time 10 \
-                    -H "Accept: application/json" \
-                    -H "Content-Type: application/json" \
-                    -H "Authorization: Bearer $token" \
-                    -H "anthropic-beta: oauth-2025-04-20" \
-                    -H "User-Agent: claude-code/2.1.34" \
-                    "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
-                if [ -n "$response" ] && echo "$response" | jq . >/dev/null 2>&1; then
-                    usage_data="$response"
-                    # Atomic write: write to temp file then mv
-                    tmpfile=$(mktemp /tmp/claude/.cache.XXXXXX)
-                    echo "$response" > "$tmpfile"
-                    mv "$tmpfile" "$cache_file"
-                fi
-            fi
-        fi
-        flock -u 200
-    fi
-    exec 200>&-
-    # Fall back to existing cache (stale or just refreshed by another process)
-    if [ -z "$usage_data" ] && [ -f "$cache_file" ]; then
-        usage_data=$(cat "$cache_file" 2>/dev/null)
-    fi
-fi
-
-# Cross-platform ISO to epoch conversion
-# Converts ISO 8601 timestamp (e.g. "2025-06-15T12:30:00Z" or "2025-06-15T12:30:00.123+00:00") to epoch seconds.
-# Properly handles UTC timestamps and converts to local time.
-iso_to_epoch() {
-    local iso_str="$1"
-
-    # Try GNU date first (Linux) — handles ISO 8601 format automatically
-    local epoch
-    epoch=$(date -d "${iso_str}" +%s 2>/dev/null)
-    if [ -n "$epoch" ]; then
-        echo "$epoch"
-        return 0
-    fi
-
-    # BSD date (macOS) - handle various ISO 8601 formats
-    local stripped="${iso_str%%.*}"          # Remove fractional seconds (.123456)
-    stripped="${stripped%%Z}"                 # Remove trailing Z
-    stripped="${stripped%%+*}"               # Remove timezone offset (+00:00)
-    stripped="${stripped%%-[0-9][0-9]:[0-9][0-9]}"  # Remove negative timezone offset
-
-    # Check if timestamp is UTC (has Z or +00:00 or -00:00)
-    if [[ "$iso_str" == *"Z"* ]] || [[ "$iso_str" == *"+00:00"* ]] || [[ "$iso_str" == *"-00:00"* ]]; then
-        # For UTC timestamps, parse with timezone set to UTC
-        epoch=$(env TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
-    else
-        epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
-    fi
-
-    if [ -n "$epoch" ]; then
-        echo "$epoch"
-        return 0
-    fi
-
-    return 1
-}
-
-# Format remaining time until reset as compact "Xd Yh Zm" string
-# Usage: format_remaining_time <iso_string>
-format_remaining_time() {
-    local iso_str="$1"
-    [ -z "$iso_str" ] || [ "$iso_str" = "null" ] && return
-
-    local reset_epoch now_epoch diff
-    reset_epoch=$(iso_to_epoch "$iso_str")
-    [ -z "$reset_epoch" ] && return
-
-    now_epoch=$(date +%s)
-    diff=$(( reset_epoch - now_epoch ))
-
-    # Already past reset time
-    if [ "$diff" -le 0 ]; then
-        printf "0m"
-        return
-    fi
-
-    local days=$(( diff / 86400 ))
-    local hours=$(( (diff % 86400) / 3600 ))
-    local mins=$(( (diff % 3600) / 60 ))
-
-    if [ "$days" -gt 0 ]; then
-        printf "%dd%dh" "$days" "$hours"
-    elif [ "$hours" -gt 0 ]; then
-        printf "%dh%dm" "$hours" "$mins"
-    else
-        printf "%dm" "$mins"
-    fi
-}
-
+# ===== Rate limits from status line JSON =====
 sep=" ${dim}|${reset} "
+bar_width=6
 
-if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
-    bar_width=6
-
-    # ---- 5-hour (current) ----
-    five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
-    five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
-    five_hour_remaining=$(format_remaining_time "$five_hour_reset_iso")
+# 5-hour limit
+five_hour_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
+if [ -n "$five_hour_pct" ]; then
+    five_hour_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // 0')
+    five_hour_remaining=$(format_remaining "$five_hour_reset")
     five_hour_bar=$(build_bar "$five_hour_pct" "$bar_width")
 
     out+="${sep} ${five_hour_bar} ${cyan}${five_hour_pct}%${reset}"
     [ -n "$five_hour_remaining" ] && out+=" ${dim}in ${five_hour_remaining}${reset}"
+fi
 
-    # ---- 7-day (weekly) ----
-    seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')
-    seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
-    seven_day_remaining=$(format_remaining_time "$seven_day_reset_iso")
+# 7-day limit
+seven_day_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
+if [ -n "$seven_day_pct" ]; then
+    seven_day_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // 0')
+    seven_day_remaining=$(format_remaining "$seven_day_reset")
     seven_day_bar=$(build_bar "$seven_day_pct" "$bar_width")
 
     out+="${sep} ${seven_day_bar} ${cyan}${seven_day_pct}%${reset}"
     [ -n "$seven_day_remaining" ] && out+=" ${dim}in ${seven_day_remaining}${reset}"
-
-    # ---- Extra usage ----
-    extra_enabled=$(echo "$usage_data" | jq -r '.extra_usage.is_enabled // false')
-    if [ "$extra_enabled" = "true" ]; then
-        extra_pct=$(echo "$usage_data" | jq -r '.extra_usage.utilization // 0' | awk '{printf "%.0f", $1}')
-        extra_used=$(echo "$usage_data" | jq -r '.extra_usage.used_credits // 0' | awk '{printf "%.2f", $1/100}')
-        extra_limit=$(echo "$usage_data" | jq -r '.extra_usage.monthly_limit // 0' | awk '{printf "%.2f", $1/100}')
-        extra_bar=$(build_bar "$extra_pct" "$bar_width")
-
-        out+="${sep}${white}extra${reset} ${extra_bar} ${cyan}\$${extra_used}/\$${extra_limit}${reset}"
-    fi
 fi
 
 # Off-peak indicator (peak = Mon-Fri 8:00-13:59 ET, until 2026-03-27)
@@ -323,8 +178,14 @@ et_hour=${et_hour#0}            # strip leading zero
 
 if [ "$et_ymd" -le 20260327 ]; then
     if [ "$et_dow" -ge 6 ] || [ "$et_hour" -lt 8 ] || [ "$et_hour" -ge 14 ]; then
-        out+="${sep}${dim}off-peak${reset}"
+        out+="${sep}${green}off-peak${reset}"
     fi
+fi
+
+# Version
+version=$(echo "$input" | jq -r '.version // empty')
+if [ -n "$version" ]; then
+    out+="${sep}${dim}v${version}${reset}"
 fi
 
 # Output single line

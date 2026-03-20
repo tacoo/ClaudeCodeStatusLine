@@ -15,7 +15,8 @@ A custom status line for [Claude Code](https://claude.com/claude-code) that disp
 | **% Used / Remain** | Context window usage percentage |
 | **5h** | 5-hour rate limit usage with progress bar and remaining time |
 | **7d** | 7-day rate limit usage with progress bar and remaining time |
-| **Extra** | Extra usage credits spent / limit (if enabled) |
+| **Off-peak** | Green indicator when outside ET peak hours (Mon–Fri 8:00–13:59) |
+| **Version** | Claude Code version (e.g., v2.1.80) |
 
 Progress bars change color based on usage: green → orange → yellow → red.
 
@@ -89,10 +90,6 @@ Claude Code will save the script and configure `settings.json` for you automatic
    ```
 
 3. Restart Claude Code.
-
-## Caching
-
-Usage data from the Anthropic API is cached for 60 seconds at `/tmp/claude/statusline-usage-cache.json` to avoid excessive API calls. Cache writes are atomic (write to temp file then `mv`), and concurrent refreshes are prevented with `flock`.
 
 ## License
 
