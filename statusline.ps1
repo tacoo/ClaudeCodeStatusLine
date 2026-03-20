@@ -14,7 +14,7 @@ if ($args -contains '--update') {
         $newVersion = (Select-String -Path $tmp -Pattern '^\$Version\s*=\s*"(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
         Copy-Item $tmp $PSCommandPath -Force
         Remove-Item $tmp -Force
-        "Updated: $PSCommandPath ($oldVersion -> $($newVersion ?? 'unknown'))"
+        "Updated: $PSCommandPath ($oldVersion -> $(if ($newVersion) { $newVersion } else { 'unknown' }))"
     } catch {
         if ($tmp -and (Test-Path $tmp)) { Remove-Item $tmp -Force }
         "Update failed: $_" | Write-Error
