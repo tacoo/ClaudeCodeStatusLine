@@ -4,7 +4,7 @@
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'SilentlyContinue'
 
-$Version = "1.0.3"
+$Version = "1.0.4"
 
 if ($args -contains '--update') {
     $oldVersion = $Version
@@ -56,16 +56,16 @@ function Build-Bar([int]$pct, [int]$width) {
     $filled = [math]::Floor($pct * $width / 100)
     $empty  = $width - $filled
 
+    $fc = ([char]0x25CF).ToString()   # ●
+
     $barColor = if ($pct -ge 90) { $red }
                 elseif ($pct -ge 70) { $yellow }
                 elseif ($pct -ge 50) { $orange }
                 else { $green }
-
-    $filledStr = ([char]0x25CF).ToString() * $filled   # ●
-    $emptyStr  = ([char]0x25CB).ToString() * $empty    # ○
-
-    $emptyColor = "${e}[38;2;80;80;80m"
-    return "${barColor}${filledStr}${emptyColor}${emptyStr}${reset}"
+    $bar = ""
+    for ($i = 0; $i -lt $filled; $i++) { $bar += "${barColor}${fc}" }
+    for ($i = 0; $i -lt $empty;  $i++) { $bar += "${dim}${fc}" }
+    return "${bar}${reset}"
 }
 
 function Format-Remaining([long]$resetEpoch) {
