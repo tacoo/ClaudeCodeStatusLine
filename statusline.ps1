@@ -4,7 +4,7 @@
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'SilentlyContinue'
 
-$Version = "1.0.0"
+$Version = "1.0.1"
 
 if ($args -contains '--update') {
     $oldVersion = $Version
@@ -97,8 +97,8 @@ $current = $inputTokens + $cacheCreate + $cacheRead
 $usedTokens  = Format-Tokens $current
 $totalTokens = Format-Tokens $size
 
-$pctUsed   = if ($data.context_window.used_percentage) { [int]$data.context_window.used_percentage } else { 0 }
-$pctRemain = if ($data.context_window.remaining_percentage) { [int]$data.context_window.remaining_percentage } else { 100 }
+$pctUsed   = if ($data.context_window.used_percentage) { [math]::Round([double]$data.context_window.used_percentage) } else { 0 }
+$pctRemain = if ($data.context_window.remaining_percentage) { [math]::Round([double]$data.context_window.remaining_percentage) } else { 100 }
 
 # ===== Build single-line output =====
 $out = ""
@@ -129,7 +129,7 @@ $barWidth = 6
 # 5-hour limit
 $fiveHourPct = $data.rate_limits.five_hour.used_percentage
 if ($null -ne $fiveHourPct) {
-    $fiveHourPct = [int]$fiveHourPct
+    $fiveHourPct = [math]::Round([double]$fiveHourPct)
     $fiveHourReset = if ($data.rate_limits.five_hour.resets_at) { [long]$data.rate_limits.five_hour.resets_at } else { 0 }
     $fiveHourRemaining = Format-Remaining $fiveHourReset
     $fiveHourBar = Build-Bar $fiveHourPct $barWidth
@@ -141,7 +141,7 @@ if ($null -ne $fiveHourPct) {
 # 7-day limit
 $sevenDayPct = $data.rate_limits.seven_day.used_percentage
 if ($null -ne $sevenDayPct) {
-    $sevenDayPct = [int]$sevenDayPct
+    $sevenDayPct = [math]::Round([double]$sevenDayPct)
     $sevenDayReset = if ($data.rate_limits.seven_day.resets_at) { [long]$data.rate_limits.seven_day.resets_at } else { 0 }
     $sevenDayRemaining = Format-Remaining $sevenDayReset
     $sevenDayBar = Build-Bar $sevenDayPct $barWidth

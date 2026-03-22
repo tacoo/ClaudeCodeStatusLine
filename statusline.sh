@@ -3,7 +3,7 @@
 
 set -f  # disable globbing
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 if [ "$1" = "--update" ]; then
     old_version="$VERSION"
@@ -109,8 +109,8 @@ size=$(echo "$input" | jq -r '.context_window.context_window_size // 200000')
 [ "$size" -eq 0 ] 2>/dev/null && size=200000
 
 # Pre-computed percentages
-pct_used=$(echo "$input" | jq -r '.context_window.used_percentage // 0')
-pct_remain=$(echo "$input" | jq -r '.context_window.remaining_percentage // 100')
+pct_used=$(echo "$input" | jq -r '(.context_window.used_percentage // 0) | round')
+pct_remain=$(echo "$input" | jq -r '(.context_window.remaining_percentage // 100) | round')
 
 # Token counts for display
 input_tokens=$(echo "$input" | jq -r '.context_window.current_usage.input_tokens // 0')
@@ -147,7 +147,7 @@ sep=" ${dim}|${reset} "
 bar_width=6
 
 # 5-hour limit
-five_hour_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
+five_hour_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty | if . then round else empty end')
 if [ -n "$five_hour_pct" ]; then
     five_hour_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // 0')
     five_hour_remaining=$(format_remaining "$five_hour_reset")
@@ -158,7 +158,7 @@ if [ -n "$five_hour_pct" ]; then
 fi
 
 # 7-day limit
-seven_day_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
+seven_day_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty | if . then round else empty end')
 if [ -n "$seven_day_pct" ]; then
     seven_day_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // 0')
     seven_day_remaining=$(format_remaining "$seven_day_reset")
