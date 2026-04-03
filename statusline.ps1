@@ -4,7 +4,7 @@
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'SilentlyContinue'
 
-$Version = "1.0.4"
+$Version = "1.0.5"
 
 if ($args -contains '--update') {
     $oldVersion = $Version
@@ -151,20 +151,17 @@ if ($null -ne $sevenDayPct) {
     if ($sevenDayRemaining) { $out += " ${dim}in ${sevenDayRemaining}${reset}" }
 }
 
-# Off-peak indicator (peak = Mon-Fri 8:00-13:59 ET, until 2026-03-27)
+# Peak indicator (Mon-Fri 5:00-10:59 PT)
 try {
-    $etZone = [TimeZoneInfo]::FindSystemTimeZoneById('Eastern Standard Time')
-    $etNow  = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $etZone)
-    $etDow  = [int]$etNow.DayOfWeek  # 0=Sun..6=Sat
-    $etHour = $etNow.Hour
-    $etDate = [int]$etNow.ToString("yyyyMMdd")
+    $ptZone = [TimeZoneInfo]::FindSystemTimeZoneById('Pacific Standard Time')
+    $ptNow  = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $ptZone)
+    $ptDow  = [int]$ptNow.DayOfWeek  # 0=Sun..6=Sat
+    $ptHour = $ptNow.Hour
 
-    if ($etDate -le 20260327) {
-        $isWeekend = ($etDow -eq 0 -or $etDow -eq 6)
-        $isOffHours = ($etHour -lt 8 -or $etHour -ge 14)
-        if ($isWeekend -or $isOffHours) {
-            $out += "${sep}${green}off-peak${reset}"
-        }
+    $isWeekday = ($ptDow -ge 1 -and $ptDow -le 5)
+    $isPeakHour = ($ptHour -ge 5 -and $ptHour -lt 11)
+    if ($isWeekday -and $isPeakHour) {
+        $out += "${sep}${red}peak${reset}"
     }
 } catch {}
 

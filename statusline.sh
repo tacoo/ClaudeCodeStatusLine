@@ -3,7 +3,7 @@
 
 set -f  # disable globbing
 
-VERSION="1.0.1"
+VERSION="1.0.2"
 
 if [ "$1" = "--update" ]; then
     old_version="$VERSION"
@@ -168,18 +168,14 @@ if [ -n "$seven_day_pct" ]; then
     [ -n "$seven_day_remaining" ] && out+=" ${dim}in ${seven_day_remaining}${reset}"
 fi
 
-# Off-peak indicator (peak = Mon-Fri 8:00-13:59 ET, until 2026-03-27)
-et_date=$(TZ=America/New_York date +"%u %H %Y%m%d")
-et_dow=${et_date%% *}          # 1=Mon..7=Sun
-et_rest=${et_date#* }
-et_hour=${et_rest%% *}          # 00-23
-et_ymd=${et_rest#* }            # YYYYMMDD
-et_hour=${et_hour#0}            # strip leading zero
+# Peak indicator (Mon-Fri 5:00-10:59 PT)
+pt_date=$(TZ=America/Los_Angeles date +"%u %H")
+pt_dow=${pt_date%% *}
+pt_hour=${pt_date#* }
+pt_hour=${pt_hour#0}
 
-if [ "$et_ymd" -le 20260327 ]; then
-    if [ "$et_dow" -ge 6 ] || [ "$et_hour" -lt 8 ] || [ "$et_hour" -ge 14 ]; then
-        out+="${sep}${green}off-peak${reset}"
-    fi
+if [ "$pt_dow" -le 5 ] && [ "$pt_hour" -ge 5 ] && [ "$pt_hour" -lt 11 ]; then
+    out+="${sep}${red}peak${reset}"
 fi
 
 # Version
